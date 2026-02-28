@@ -12,17 +12,16 @@
     return "a" + Math.random().toString(36).slice(2);
   }
 
-  // Helper to read attributes from either prefix
   function getAttr(el, suffix) {
-    var dVal = el.getAttribute("data-rt-" + suffix);
+    var dVal = el.getAttribute("data-rt-accordion-" + suffix);
     if (dVal !== null) return dVal;
-    return el.getAttribute("rt-" + suffix);
+    return el.getAttribute("rt-accordion-" + suffix);
   }
 
-  // Helper to check for either prefix
   function hasAttr(el, suffix) {
     return (
-      el.hasAttribute("data-rt-" + suffix) || el.hasAttribute("rt-" + suffix)
+      el.hasAttribute("data-rt-accordion-" + suffix) ||
+      el.hasAttribute("rt-accordion-" + suffix)
     );
   }
 
@@ -30,8 +29,7 @@
     var existing = getAttr(el, suffix);
     if (existing) return existing;
     var newUid = uid();
-    // Default to data-rt for writing valid HTML state
-    el.setAttribute("data-rt-" + suffix, newUid);
+    el.setAttribute("data-rt-accordion-" + suffix, newUid);
     return newUid;
   }
 
@@ -40,9 +38,9 @@
     var defaultOpen = (getAttr(root, "default-open") || "first").toLowerCase();
 
     return {
-      item: "[data-rt-item], [rt-item]",
-      trigger: "[data-rt-trigger], [rt-trigger]",
-      content: "[data-rt-content], [rt-content]",
+      item: "[data-rt-accordion-item], [rt-accordion-item]",
+      trigger: "[data-rt-accordion-trigger], [rt-accordion-trigger]",
+      content: "[data-rt-accordion-content], [rt-accordion-content]",
       mode: mode,
       defaultOpen: defaultOpen,
     };
@@ -57,7 +55,7 @@
     this.valid = this.items.length > 0;
     if (!this.valid) return;
 
-    this.accordionId = assignUID(this.root, "accordion-id");
+    this.accordionId = assignUID(this.root, "id");
     this.bindings = [];
     this.ro = null;
     this._roTicking = false;
@@ -82,13 +80,18 @@
 
   Accordion.prototype.updateExpandedText = function (item, open) {
     var nodes = Array.from(
-      item.querySelectorAll("[data-rt-expanded-text], [rt-expanded-text]"),
+      item.querySelectorAll(
+        "[data-rt-accordion-expanded-text], [rt-accordion-expanded-text]",
+      ),
     );
     if (!nodes.length) return;
 
     nodes.forEach(function (el) {
       if (!hasAttr(el, "original-text")) {
-        el.setAttribute("data-rt-original-text", el.textContent || "");
+        el.setAttribute(
+          "data-rt-accordion-original-text",
+          el.textContent || "",
+        );
       }
       var expanded = getAttr(el, "expanded-text");
       var original = getAttr(el, "original-text");
@@ -121,13 +124,15 @@
       : "height " + durationMs + "ms " + EASE;
     item.style.height = target + "px";
 
-    // Set both so CSS targets work regardless of what the user prefers
-    item.setAttribute("data-rt-is-open", open ? "true" : "false");
-    item.setAttribute("rt-is-open", open ? "true" : "false");
-    item.setAttribute("aria-expanded", open ? "true" : "false");
+    item.setAttribute("data-rt-accordion-is-open", open ? "true" : "false");
+    item.setAttribute("rt-accordion-is-open", open ? "true" : "false");
 
     if (triggerEl) {
       triggerEl.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+
+    if (contentEl) {
+      contentEl.setAttribute("aria-hidden", open ? "false" : "true");
     }
 
     this.updateExpandedText(item, open);
@@ -172,15 +177,19 @@
       item.style.overflow = "hidden";
       item.style.willChange = "height";
 
-      item.setAttribute("role", "group");
       triggerEl.setAttribute("role", "button");
       triggerEl.setAttribute("tabindex", "0");
-
-      if (!contentEl.id) {
-        contentEl.id = "rt-acc-" + uid();
-      }
-      triggerEl.setAttribute("aria-controls", contentEl.id);
       contentEl.setAttribute("role", "region");
+
+      if (!triggerEl.id) {
+        triggerEl.id = "rt-acc-trig-" + uid();
+      }
+      if (!contentEl.id) {
+        contentEl.id = "rt-acc-cont-" + uid();
+      }
+
+      triggerEl.setAttribute("aria-controls", contentEl.id);
+      contentEl.setAttribute("aria-labelledby", triggerEl.id);
 
       var forcedOpen = hasAttr(item, "open");
       var openInitially =
@@ -228,6 +237,32 @@
       if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
         e.preventDefault();
         self.handleToggle(e.target);
+        return;
+      }
+
+      var triggers = [];
+      for (var i = 0; i < self.items.length; i++) {
+        var t = self.items[i].querySelector(self.conf.trigger);
+        if (t) triggers.push(t);
+      }
+      var idx = triggers.indexOf(e.target);
+
+      if (idx > -1) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          var next = triggers[idx + 1] || triggers[0];
+          next.focus();
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          var prev = triggers[idx - 1] || triggers[triggers.length - 1];
+          prev.focus();
+        } else if (e.key === "Home") {
+          e.preventDefault();
+          triggers[0].focus();
+        } else if (e.key === "End") {
+          e.preventDefault();
+          triggers[triggers.length - 1].focus();
+        }
       }
     };
 
@@ -274,12 +309,23 @@
       item.style.transition = "";
       item.style.overflow = "";
       item.style.willChange = "";
-      item.removeAttribute("data-rt-is-open");
-      item.removeAttribute("rt-is-open");
-      item.removeAttribute("aria-expanded");
+      item.removeAttribute("data-rt-accordion-is-open");
+      item.removeAttribute("rt-accordion-is-open");
 
       var triggerEl = item.querySelector(self.conf.trigger);
-      if (triggerEl) triggerEl.removeAttribute("aria-expanded");
+      if (triggerEl) {
+        triggerEl.removeAttribute("aria-expanded");
+        triggerEl.removeAttribute("aria-controls");
+        triggerEl.removeAttribute("role");
+        triggerEl.removeAttribute("tabindex");
+      }
+
+      var contentEl = item.querySelector(self.conf.content);
+      if (contentEl) {
+        contentEl.removeAttribute("role");
+        contentEl.removeAttribute("aria-labelledby");
+        contentEl.removeAttribute("aria-hidden");
+      }
     });
   };
 
@@ -289,7 +335,6 @@
   };
 
   function init() {
-    // Select elements using either prefix
     var roots = document.querySelectorAll(
       "[data-rt-accordion], [rt-accordion]",
     );
@@ -297,7 +342,7 @@
 
     for (var i = 0; i < roots.length; i++) {
       var root = roots[i];
-      var id = getAttr(root, "accordion-id");
+      var id = getAttr(root, "id");
 
       if (!id) {
         autoCount++;
