@@ -35,7 +35,6 @@
 
   function getConf(root) {
     var mode = (getAttr(root, "mode") || "single").toLowerCase();
-    // Changed the default fallback from "first" to "1"
     var defaultOpen = (getAttr(root, "default-open") || "1").toLowerCase();
 
     return {
@@ -51,16 +50,21 @@
     this.root = root;
     this.id = id;
     this.conf = getConf(root);
-
-    this.items = Array.from(this.root.querySelectorAll(this.conf.item));
-    this.valid = this.items.length > 0;
-    if (!this.valid) return;
-
+    this.items = [];
+    this.valid = false;
     this.accordionId = assignUID(this.root, "id");
     this.bindings = [];
     this.ro = null;
     this._roTicking = false;
+    this._bound = false;
+    this.collectItems();
   }
+
+  Accordion.prototype.collectItems = function () {
+    this.conf = getConf(this.root);
+    this.items = Array.from(this.root.querySelectorAll(this.conf.item));
+    this.valid = this.items.length > 0;
+  };
 
   Accordion.prototype.computeExpandedHeight = function (triggerEl, contentEl) {
     var t = triggerEl ? triggerEl.offsetHeight : 0;
@@ -153,6 +157,8 @@
   };
 
   Accordion.prototype.handleToggle = function (triggerEl) {
+    this.collectItems();
+
     var item = triggerEl.closest(this.conf.item);
     if (!item) return;
 
@@ -167,21 +173,28 @@
     }
   };
 
-  Accordion.prototype.initItems = function () {
-    var self = this;
+  Accordion.prototype.getTargetIndices = function () {
     var targetIndices = [];
 
-    // Removed the "first" check so "1" falls right into the number parser
-    if (self.conf.defaultOpen !== "all" && self.conf.defaultOpen !== "none") {
-      var parts = self.conf.defaultOpen.split(",");
+    if (this.conf.defaultOpen !== "all" && this.conf.defaultOpen !== "none") {
+      var parts = this.conf.defaultOpen.split(",");
       for (var i = 0; i < parts.length; i++) {
         var num = parseInt(parts[i].trim(), 10);
         if (!isNaN(num)) {
-          // Subtract 1 to convert from 1-based user input to 0-based array index
           targetIndices.push(num - 1);
         }
       }
     }
+
+    return targetIndices;
+  };
+
+  Accordion.prototype.syncItems = function (immediate, preserveState) {
+    this.collectItems();
+    if (!this.valid) return;
+
+    var self = this;
+    var targetIndices = this.getTargetIndices();
 
     this.items.forEach(function (item, index) {
       var triggerEl = item.querySelector(self.conf.trigger);
@@ -207,17 +220,69 @@
 
       var forcedOpen = hasAttr(item, "open");
       var isTargetIndex = targetIndices.indexOf(index) > -1;
+      var currentState = getAttr(item, "is-open") === "true";
 
-      // Removed the fallback check for "first" here as well
-      var openInitially =
-        forcedOpen || self.conf.defaultOpen === "all" || isTargetIndex;
+      var openInitially = preserveState
+        ? currentState
+        : forcedOpen || self.conf.defaultOpen === "all" || isTargetIndex;
 
-      self.setItemOpen(item, triggerEl, contentEl, openInitially, true);
+      self.setItemOpen(item, triggerEl, contentEl, openInitially, immediate);
     });
+
+    if (this.conf.mode === "single") {
+      var openItems = [];
+      this.items.forEach(function (item) {
+        if (getAttr(item, "is-open") === "true") {
+          openItems.push(item);
+        }
+      });
+
+      if (openItems.length > 1) {
+        for (var i = 1; i < openItems.length; i++) {
+          var t = openItems[i].querySelector(self.conf.trigger);
+          var c = openItems[i].querySelector(self.conf.content);
+          self.setItemOpen(openItems[i], t, c, false, true);
+        }
+      }
+    }
+  };
+
+  Accordion.prototype.observeResizeTargets = function () {
+    var self = this;
+
+    if (this.ro) {
+      this.ro.disconnect();
+      this.ro = null;
+    }
+
+    if (typeof ResizeObserver === "undefined") return;
+
+    this.ro = new ResizeObserver(function () {
+      if (self._roTicking) return;
+      self._roTicking = true;
+      requestAnimationFrame(function () {
+        self._roTicking = false;
+        self.onResize();
+      });
+    });
+
+    this.items.forEach(function (item) {
+      var content = item.querySelector(self.conf.content);
+      var trigger = item.querySelector(self.conf.trigger);
+      if (content) self.ro.observe(content);
+      if (trigger) self.ro.observe(trigger);
+    });
+  };
+
+  Accordion.prototype.initItems = function () {
+    this.syncItems(true, false);
+    this.observeResizeTargets();
   };
 
   Accordion.prototype.onResize = function () {
     var self = this;
+    this.collectItems();
+
     this.items.forEach(function (item) {
       var t = item.querySelector(self.conf.trigger);
       var c = item.querySelector(self.conf.content);
@@ -231,7 +296,15 @@
     });
   };
 
+  Accordion.prototype.rebuild = function () {
+    this.syncItems(true, true);
+    this.observeResizeTargets();
+    this.onResize();
+  };
+
   Accordion.prototype.bindEvents = function () {
+    if (this._bound) return;
+
     var self = this;
 
     this._onClick = function (e) {
@@ -254,6 +327,8 @@
         self.handleToggle(e.target);
         return;
       }
+
+      self.collectItems();
 
       var triggers = [];
       for (var i = 0; i < self.items.length; i++) {
@@ -283,27 +358,12 @@
 
     this.root.addEventListener("click", this._onClick);
     this.root.addEventListener("keydown", this._onKeydown);
-
-    if (typeof ResizeObserver !== "undefined") {
-      this.ro = new ResizeObserver(function () {
-        if (self._roTicking) return;
-        self._roTicking = true;
-        requestAnimationFrame(function () {
-          self._roTicking = false;
-          self.onResize();
-        });
-      });
-
-      this.items.forEach(function (item) {
-        var content = item.querySelector(self.conf.content);
-        var trigger = item.querySelector(self.conf.trigger);
-        if (content) self.ro.observe(content);
-        if (trigger) self.ro.observe(trigger);
-      });
-    }
+    this._bound = true;
   };
 
   Accordion.prototype.init = function () {
+    this.collectItems();
+    if (!this.valid) return;
     this.initItems();
     this.bindEvents();
   };
@@ -312,6 +372,8 @@
     if (this._onClick) this.root.removeEventListener("click", this._onClick);
     if (this._onKeydown)
       this.root.removeEventListener("keydown", this._onKeydown);
+
+    this._bound = false;
 
     if (this.ro) {
       this.ro.disconnect();
@@ -342,38 +404,132 @@
         contentEl.removeAttribute("aria-hidden");
       }
     });
+
+    this.collectItems();
   };
 
   var state = {
     instances: {},
     order: [],
+    mo: null,
+    moTicking: false,
   };
+
+  function ensureInstance(root) {
+    var id = getAttr(root, "id");
+
+    if (!id) {
+      id = "accordion-" + (state.order.length + 1);
+      root.setAttribute("data-rt-accordion-id", id);
+    }
+
+    var inst = state.instances[id];
+
+    if (!inst) {
+      inst = new Accordion(root, id);
+      if (!inst.valid) return null;
+      state.instances[id] = inst;
+      state.order.push(id);
+      inst.init();
+      return inst;
+    }
+
+    inst.rebuild();
+    return inst;
+  }
+
+  function removeDetachedInstances() {
+    var nextOrder = [];
+
+    for (var i = 0; i < state.order.length; i++) {
+      var id = state.order[i];
+      var inst = state.instances[id];
+      if (!inst) continue;
+
+      if (!document.documentElement.contains(inst.root)) {
+        inst.destroy();
+        delete state.instances[id];
+        continue;
+      }
+
+      nextOrder.push(id);
+    }
+
+    state.order = nextOrder;
+  }
 
   function init() {
     var roots = document.querySelectorAll(
       "[data-rt-accordion], [rt-accordion]",
     );
-    var autoCount = 0;
 
     for (var i = 0; i < roots.length; i++) {
-      var root = roots[i];
-      var id = getAttr(root, "id");
-
-      if (!id) {
-        autoCount++;
-        id = "accordion-" + autoCount;
-        root.setAttribute("data-rt-accordion-id", id);
-      }
-
-      if (state.instances[id]) continue;
-
-      var inst = new Accordion(root, id);
-      if (inst.valid) {
-        state.instances[id] = inst;
-        state.order.push(id);
-        inst.init();
-      }
+      ensureInstance(roots[i]);
     }
+
+    removeDetachedInstances();
+  }
+
+  function scheduleInit() {
+    if (state.moTicking) return;
+    state.moTicking = true;
+
+    requestAnimationFrame(function () {
+      state.moTicking = false;
+      init();
+    });
+  }
+
+  function watchDom() {
+    if (state.mo || typeof MutationObserver === "undefined") return;
+
+    state.mo = new MutationObserver(function (mutations) {
+      for (var i = 0; i < mutations.length; i++) {
+        var m = mutations[i];
+
+        if (m.type === "childList") {
+          if (m.addedNodes.length || m.removedNodes.length) {
+            scheduleInit();
+            return;
+          }
+        }
+
+        if (m.type === "attributes") {
+          var target = m.target;
+          if (
+            target &&
+            target.nodeType === 1 &&
+            (target.matches("[data-rt-accordion], [rt-accordion]") ||
+              target.closest("[data-rt-accordion], [rt-accordion]"))
+          ) {
+            scheduleInit();
+            return;
+          }
+        }
+      }
+    });
+
+    state.mo.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: [
+        "data-rt-accordion",
+        "rt-accordion",
+        "data-rt-accordion-item",
+        "rt-accordion-item",
+        "data-rt-accordion-trigger",
+        "rt-accordion-trigger",
+        "data-rt-accordion-content",
+        "rt-accordion-content",
+        "data-rt-accordion-default-open",
+        "rt-accordion-default-open",
+        "data-rt-accordion-mode",
+        "rt-accordion-mode",
+        "data-rt-accordion-open",
+        "rt-accordion-open",
+      ],
+    });
   }
 
   function makeApi() {
@@ -385,11 +541,19 @@
       get: function (id) {
         return state.instances[id] || null;
       },
-      refresh: function () {
-        var keys = state.order;
+      refresh: function (id) {
+        if (typeof id === "string") {
+          var inst = state.instances[id];
+          if (inst) inst.rebuild();
+          return;
+        }
+
+        init();
+
+        var keys = state.order.slice();
         for (var i = 0; i < keys.length; i++) {
-          var inst = state.instances[keys[i]];
-          if (inst) inst.onResize();
+          var instance = state.instances[keys[i]];
+          if (instance) instance.rebuild();
         }
       },
       destroy: function (id) {
@@ -403,20 +567,35 @@
           }
           return;
         }
+
+        if (state.mo) {
+          state.mo.disconnect();
+          state.mo = null;
+        }
+
         for (var i = 0; i < state.order.length; i++) {
           var k = state.order[i];
           if (state.instances[k]) state.instances[k].destroy();
         }
+
         state.instances = {};
         state.order = [];
+        state.moTicking = false;
+      },
+      init: function () {
+        init();
       },
     };
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", function () {
+      init();
+      watchDom();
+    });
   } else {
     init();
+    watchDom();
   }
 
   window[RT_NS] = makeApi();
